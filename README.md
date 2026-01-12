@@ -93,8 +93,3 @@ PostgreSQL Buffer Manager (bufmgr.c): [Github Linki](https://github.com/postgres
 
 PostgreSQL Buffer Strategy (freelist.c): [Github Linki](https://github.com/postgres/postgres/blob/master/src/backend/storage/buffer/freelist.c)
 
-Açıklama [Linki](https://...) \
-Açıklama [Linki](https://...) \
-Açıklama [Linki](https://...) \
-... \
-...
