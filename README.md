@@ -63,20 +63,28 @@ Ekran kaydı. 2-3 dk. açık kaynak V.T. kodu üzerinde konunun gösterimi. Vide
 
 # Açıklama (Ort. 600 kelime)
 
-### Konu: PostgreSQL Üzerinde Buffer Pool (Önbellek Havuzu) İncelemesi
+### Konu: PostgreSQL Üzerinde Buffer Pool (Önbellek Havuzu) ve Bellek Yönetimi Mimarisi
 
-**1. Giriş ve Teorik Altyapı:**
-Veritabanı yönetim sistemlerinde (DBMS) disk erişimi (I/O), bellek (RAM) erişimine göre çok daha yavaş ve maliyetli bir işlemdir. Bu nedenle, sık kullanılan veri sayfalarının (pages) sürekli diskten okunması yerine, RAM üzerinde ayrılmış özel bir alanda tutulması gerekir. Bu alana **Buffer Pool (Önbellek Havuzu)** denir.
+**1. Giriş: Sistem Programlama Perspektifi ve Disk/Bellek Darboğazı**
+Veritabanı Yönetim Sistemleri (DBMS) tasarımındaki en temel zorluk, bellek hiyerarşisindeki hız farklarıdır. Modern bilgisayar mimarilerinde CPU (İşlemci) ve RAM (Ana Bellek) arasındaki veri alışverişi nanosaniyeler mertebesinde gerçekleşirken, Disk (HDD/SSD) erişimi milisaniyeler veya mikrosaniyeler sürer. Bu durum, disk I/O işlemlerinin sistemin genel performansı üzerinde ciddi bir darboğaz (bottleneck) oluşturmasına neden olur. Sistem programlama açısından bakıldığında, her veri isteğinde diske `read()` sistem çağrısı yapmak maliyetlidir. Bu sorunu çözmek için PostgreSQL, İşletim Sisteminin "Page Cache" yapısına benzer ancak veritabanı ihtiyaçlarına özelleşmiş **Buffer Pool (Önbellek Havuzu)** mekanizmasını kullanır.
 
-Teorik olarak Buffer Pool, diskin yavaşlığını maskelemek için bir "cache" (önbellek) katmanı gibi çalışır. Bir veri istendiğinde veritabanı önce Buffer Pool'a bakar (Logical Read). Eğer veri oradaysa diske gitmeden milisaniyeler içinde yanıt döner (Buffer Hit). Eğer yoksa, veri diskten okunur ve Buffer Pool'a yüklenir (Physical Read). Buffer Pool dolduğunda ise, hangi sayfanın atılacağına (eviction) karar vermek için algoritmalar (LRU, Clock Sweep vb.) kullanılır.
+PostgreSQL verileri diskte varsayılan olarak 8KB’lık "Page" (Sayfa) blokları halinde saklar. Buffer Pool, bu sayfaların RAM üzerinde kopyalarının tutulduğu paylaşımlı bir bellek alanıdır. Bir sorgu çalıştırıldığında, sistem önce istenen sayfanın bu havuzda olup olmadığını kontrol eder (**Logical Read**). Eğer veri bellekteyse (Buffer Hit), disk erişimine gerek kalmadan işlemci hızında yanıt verilir. Veri bellekte yoksa, diskten okunup havuza yüklenir (**Physical Read**). Temel amaç, fiziksel okumaları minimize ederek "Hit Ratio" oranını maksimize etmektir.
 
-**2. Açık Kaynak Kod İncelemesi (PostgreSQL):**
-Bu raporda, açık kaynak veritabanı olan **PostgreSQL**'in kaynak kodlarını inceledim. PostgreSQL'de Buffer Pool yönetimi, temel olarak `src/backend/storage/buffer/` dizini altındaki dosyalarda yapılmaktadır.
+**2. Algoritma ve Veri Yapıları: LRU Yerine Neden Clock Sweep?**
+Buffer Pool sınırlı bir boyuta sahiptir (Shared Buffers). Havuz dolduğunda, yeni gelen verilere yer açmak için bellekteki bir sayfanın atılmasına (eviction) karar verilmelidir. Teorik veri yapıları derslerinde bu işlem için genellikle **LRU (Least Recently Used - En Az Son Kullanılan)** algoritması önerilir. Ancak LRU, her veri erişiminde bellekteki bir "Çift Bağlı Liste" (Doubly Linked List) yapısının güncellenmesini gerektirir. Çok kullanıcılı (concurrency) ve yüksek işlem hacimli sistemlerde, bu listenin sürekli kilitlenmesi (Locking) ciddi performans kayıplarına ("Lock Contention") yol açar.
 
-* **Yönetim Merkezi (`bufmgr.c`):** İncelediğim `bufmgr.c` dosyası, Buffer Yöneticisinin ana arayüzüdür. Burada bulunan `ReadBuffer` ve `ReadBufferExtended` fonksiyonları sistemin giriş kapısıdır. Bir sorgu veri istediğinde bu fonksiyonlar çağrılır; sayfanın bellekte olup olmadığı burada kontrol edilir.
-* **Sayfa Değiştirme Algoritması (Clock Sweep):** PostgreSQL, standart bir LRU (Least Recently Used) yerine, daha performanslı olan "Clock Sweep" algoritmasını kullanır. Kodlarda gördüğümüz `StrategyGetBuffer` fonksiyonu (`freelist.c` ile bağlantılı çalışır), bellekte yer açmak gerektiğinde "victim" (kurban) sayfanın seçilmesinden sorumludur. `BufferDescriptors` dizisi üzerinde dönerek kullanım sıklığına (usage count) göre hangi sayfanın atılacağına karar verir.
+Bu nedenle PostgreSQL, LRU'nun bir yaklaşımı olan **Clock Sweep (Saat Algoritması)** kullanır.
+* **Veri Yapısı:** Bufferlar dairesel bir dizi (Circular Buffer) gibi düşünülür.
+* **Çalışma Mantığı:** Her sayfanın bir "Usage Count" (Kullanım Sayacı) değeri vardır. Algoritma bir saat ibresi gibi sayfalar üzerinde döner. İbre bir sayfaya geldiğinde, eğer `usage_count > 0` ise sayacı azaltır ve sayfayı bellekte tutarak bir sonrakine geçer (ona ikinci bir şans verir). Eğer `usage_count == 0` ise, o sayfa "Victim" (Kurban) seçilir ve üzerine yeni veri yazılır. Bu yöntem, O(1) karmaşıklığına yakın çalışır ve kilitlenme sorunlarını minimize eder.
 
-Bu yapı sayesinde PostgreSQL, disk I/O işlemlerini minimize ederek yüksek performans sağlar.
+**3. Açık Kaynak Kod İncelemesi (PostgreSQL Source Code)**
+Bu çalışmada, GitHub üzerindeki PostgreSQL kaynak kodlarının `src/backend/storage/buffer/` dizini incelenmiştir.
+
+* **Buffer Yöneticisi (`bufmgr.c`):** Sistemin kalbi burasıdır. `ReadBufferExtended` fonksiyonu, tüm okuma isteklerinin giriş kapısıdır. Bu fonksiyon içinde çağrılan `BufferAlloc`, istenen sayfa bellekte yoksa yeni bir yer ayırmakla görevlidir. Eğer yer yoksa, tahliye algoritmasını tetikler.
+* **Tahliye Stratejisi (`freelist.c`):** Clock Sweep algoritmasının kodlandığı yerdir. `StrategyGetBuffer` fonksiyonu incelendiğinde, kodun `BufferDescriptors` dizisi üzerinde bir döngü kurduğu ve `usage_count` değişkenini kontrol ederek "kurban" sayfayı aradığı görülmektedir. Bu, teorik algoritmanın C diliyle pratik uygulamasıdır.
+* **Kirli Sayfalar (Dirty Pages):** Eğer bellekteki bir sayfada güncelleme yapıldıysa, bu sayfa "Dirty" olarak işaretlenir. Bu sayfa bellekten atılmadan önce, veri bütünlüğü için `FlushBuffer` fonksiyonu ile mutlaka diske yazılmalıdır. Ayrıca, Write Ahead Log (WAL) protokolü gereği, veri diske yazılmadan önce log kaydının alınması da bu kod bloklarında yönetilir.
+
+Sonuç olarak; PostgreSQL'in Buffer Pool yapısı, disk yavaşlığını maskeleyerek veritabanı performansını optimize eden, gelişmiş veri yapıları ve algoritmalar kullanan karmaşık bir sistem programlama örneğidir.
 
 
 ## VT Üzerinde Gösterilen Kaynak Kodları
