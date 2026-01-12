@@ -23,9 +23,9 @@ Aşağıda kutucuk (checkbox) ile gösterilen maddelerden en az birini seçtiği
 
 ### Buffer Pool
 
-- [ ]  Veritabanları, Sık kullanılan sayfaları bellekte (RAM) kopyalar mı (caching) ?
+- [x]  Veritabanları, Sık kullanılan sayfaları bellekte (RAM) kopyalar mı (caching) ?
 
-- [ ]  LRU / CLOCK gibi algoritmaları
+- [x]  LRU / CLOCK gibi algoritmaları
 - [ ]  Diske yapılan I/O nasıl minimize ederler?
 
 # 2. Veri Yapıları Perspektifi
@@ -63,19 +63,26 @@ Ekran kaydı. 2-3 dk. açık kaynak V.T. kodu üzerinde konunun gösterimi. Vide
 
 # Açıklama (Ort. 600 kelime)
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Suspendisse lacinia luctus urna, vel aliquet lacus facilisis ac. Donec quis placerat orci, efficitur consectetur lacus. Sed rhoncus erat ex, at sagittis velit mollis et. Aliquam enim orci, sollicitudin sit amet libero quis, mollis ultricies risus. Fusce tempor, felis a consequat tristique, dolor magna convallis nulla, vel ullamcorper magna mauris non ipsum. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Nam quis imperdiet ex, at blandit sapien. Aliquam lacinia erat ac ipsum fringilla, quis vestibulum augue posuere. Nulla in enim nulla. Nunc euismod odio mauris, sed sollicitudin ex condimentum non. In efficitur egestas enim. Fusce tempus erat quis placerat convallis.
+### Konu: PostgreSQL Üzerinde Buffer Pool (Önbellek Havuzu) İncelemesi
 
-Nam sit amet tincidunt ante. Pellentesque sit amet quam interdum, pellentesque dui vel, iaculis elit. Donec sed dui sodales nulla dignissim tincidunt. Maecenas semper metus id fermentum vulputate. Pellentesque lobortis hendrerit venenatis. Nullam imperdiet, ex eget ultricies egestas, mauris nunc aliquam ante, sed consectetur tellus ex vel leo. Nunc ut erat dapibus, auctor dolor eu, pretium sem. In lacinia congue eros et finibus. Aenean auctor, leo a feugiat placerat, urna felis lacinia purus, laoreet volutpat mi nisl eget dui. Ut vitae condimentum leo.
+**1. Giriş ve Teorik Altyapı:**
+Veritabanı yönetim sistemlerinde (DBMS) disk erişimi (I/O), bellek (RAM) erişimine göre çok daha yavaş ve maliyetli bir işlemdir. Bu nedenle, sık kullanılan veri sayfalarının (pages) sürekli diskten okunması yerine, RAM üzerinde ayrılmış özel bir alanda tutulması gerekir. Bu alana **Buffer Pool (Önbellek Havuzu)** denir.
 
-Maecenas ex diam, vehicula et nulla vel, mattis viverra metus. Nam at ex scelerisque, semper augue lobortis, semper est. Etiam id pretium odio, eget rutrum neque. Pellentesque blandit magna vel aliquam gravida. Nullam massa nisl, imperdiet at dapibus non, cursus vehicula turpis. Vestibulum rutrum hendrerit augue. Aliquam id nisi id arcu tempor venenatis vel nec erat. Morbi sed posuere erat. Morbi et sollicitudin urna. Suspendisse ullamcorper vitae purus sit amet sodales. Nam ut tincidunt ipsum, ut varius erat. Duis congue magna nec euismod condimentum. In hac habitasse platea dictumst. Nunc mattis odio sed enim laoreet imperdiet. In hac habitasse platea dictumst. Nullam tincidunt quis.
+Teorik olarak Buffer Pool, diskin yavaşlığını maskelemek için bir "cache" (önbellek) katmanı gibi çalışır. Bir veri istendiğinde veritabanı önce Buffer Pool'a bakar (Logical Read). Eğer veri oradaysa diske gitmeden milisaniyeler içinde yanıt döner (Buffer Hit). Eğer yoksa, veri diskten okunur ve Buffer Pool'a yüklenir (Physical Read). Buffer Pool dolduğunda ise, hangi sayfanın atılacağına (eviction) karar vermek için algoritmalar (LRU, Clock Sweep vb.) kullanılır.
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Suspendisse lacinia luctus urna, vel aliquet lacus facilisis ac. Donec quis placerat orci, efficitur consectetur lacus. Sed rhoncus erat ex, at sagittis velit mollis et. Aliquam enim orci, sollicitudin sit amet libero quis, mollis ultricies risus. Fusce tempor, felis a consequat tristique, dolor magna convallis nulla, vel ullamcorper magna mauris non ipsum. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Nam quis imperdiet ex, at blandit sapien. Aliquam lacinia erat ac ipsum fringilla, quis vestibulum augue posuere. Nulla in enim nulla. Nunc euismod odio mauris, sed sollicitudin ex condimentum non. In efficitur egestas enim. Fusce tempus erat quis placerat convallis.
+**2. Açık Kaynak Kod İncelemesi (PostgreSQL):**
+Bu raporda, açık kaynak veritabanı olan **PostgreSQL**'in kaynak kodlarını inceledim. PostgreSQL'de Buffer Pool yönetimi, temel olarak `src/backend/storage/buffer/` dizini altındaki dosyalarda yapılmaktadır.
 
-Nam sit amet tincidunt ante. Pellentesque sit amet quam interdum, pellentesque dui vel, iaculis elit. Donec sed dui sodales nulla dignissim tincidunt. Maecenas semper metus id fermentum vulputate. Pellentesque lobortis hendrerit venenatis. Nullam imperdiet, ex eget ultricies egestas, mauris nunc aliquam ante, sed consectetur tellus ex vel leo. Nunc ut erat dapibus, auctor dolor eu, pretium sem. In lacinia congue eros et finibus. Aenean auctor, leo a feugiat placerat, urna felis lacinia purus, laoreet volutpat mi nisl eget dui. Ut vitae condimentum leo.
+* **Yönetim Merkezi (`bufmgr.c`):** İncelediğim `bufmgr.c` dosyası, Buffer Yöneticisinin ana arayüzüdür. Burada bulunan `ReadBuffer` ve `ReadBufferExtended` fonksiyonları sistemin giriş kapısıdır. Bir sorgu veri istediğinde bu fonksiyonlar çağrılır; sayfanın bellekte olup olmadığı burada kontrol edilir.
+* **Sayfa Değiştirme Algoritması (Clock Sweep):** PostgreSQL, standart bir LRU (Least Recently Used) yerine, daha performanslı olan "Clock Sweep" algoritmasını kullanır. Kodlarda gördüğümüz `StrategyGetBuffer` fonksiyonu (`freelist.c` ile bağlantılı çalışır), bellekte yer açmak gerektiğinde "victim" (kurban) sayfanın seçilmesinden sorumludur. `BufferDescriptors` dizisi üzerinde dönerek kullanım sıklığına (usage count) göre hangi sayfanın atılacağına karar verir.
 
-Maecenas ex diam, vehicula et nulla vel, mattis viverra metus. Nam at ex scelerisque, semper augue lobortis, semper est. Etiam id pretium odio, eget rutrum neque. Pellentesque blandit magna vel aliquam gravida. Nullam massa nisl, imperdiet at dapibus non, cursus vehicula turpis. Vestibulum rutrum hendrerit augue. Aliquam id nisi id arcu tempor venenatis vel nec erat. Morbi sed posuere erat. Morbi et sollicitudin urna. Suspendisse ullamcorper vitae purus sit amet sodales. Nam ut tincidunt ipsum, ut varius erat. Duis congue magna nec euismod condimentum. In hac habitasse platea dictumst. Nunc mattis odio sed enim laoreet imperdiet. In hac habitasse platea dictumst. Nullam tincidunt quis.
+Bu yapı sayesinde PostgreSQL, disk I/O işlemlerini minimize ederek yüksek performans sağlar.
+
 
 ## VT Üzerinde Gösterilen Kaynak Kodları
+
+PostgreSQL Buffer Manager (bufmgr.c): [Github Linki](https://github.com/postgres/postgres/blob/master/src/backend/storage/buffer/bufmgr.c)
+PostgreSQL Buffer Strategy (freelist.c): [Github Linki](https://github.com/postgres/postgres/blob/master/src/backend/storage/buffer/freelist.c)
 
 Açıklama [Linki](https://...) \
 Açıklama [Linki](https://...) \
