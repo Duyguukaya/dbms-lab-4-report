@@ -90,6 +90,7 @@ Sonuç olarak; PostgreSQL'in Buffer Pool yapısı, disk yavaşlığını maskele
 ## VT Üzerinde Gösterilen Kaynak Kodları
 
 PostgreSQL Buffer Manager (bufmgr.c): [Github Linki](https://github.com/postgres/postgres/blob/master/src/backend/storage/buffer/bufmgr.c)
+
 PostgreSQL Buffer Strategy (freelist.c): [Github Linki](https://github.com/postgres/postgres/blob/master/src/backend/storage/buffer/freelist.c)
 
 Açıklama [Linki](https://...) \
